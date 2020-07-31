@@ -57,6 +57,7 @@ from .const import (
     CONF_PASSWORD,
     CONF_PATH,
     CONF_PORT,
+    CONF_PRECISION,
     CONF_RETRY_COUNT,
     CONF_SSL,
     CONF_TAGS,
@@ -67,6 +68,7 @@ from .const import (
     CONNECTION_ERROR,
     DEFAULT_API_VERSION,
     DEFAULT_HOST_V2,
+    DEFAULT_PRECISION,
     DEFAULT_SSL_V2,
     DOMAIN,
     EVENT_NEW_STATE,
@@ -304,12 +306,19 @@ def get_influx_connection(conf, test_write=False, test_read=False):
     kwargs = {
         CONF_TIMEOUT: TIMEOUT,
     }
+    precision = conf.get(CONF_PRECISION, DEFAULT_PRECISION)
 
     if conf[CONF_API_VERSION] == API_VERSION_2:
         kwargs[CONF_URL] = conf[CONF_URL]
         kwargs[CONF_TOKEN] = conf[CONF_TOKEN]
         kwargs[INFLUX_CONF_ORG] = conf[CONF_ORG]
         bucket = conf.get(CONF_BUCKET)
+
+        if precision not in ["ms", "s", "us", "ns"]:
+            _LOGGER.warning(
+                "Precision %s not valid, using %s.", precision, DEFAULT_PRECISION
+            )
+            precision = DEFAULT_PRECISION
 
         influx = InfluxDBClientV2(**kwargs)
         query_api = influx.query_api()
@@ -319,7 +328,7 @@ def get_influx_connection(conf, test_write=False, test_read=False):
         def write_v2(json):
             """Write data to V2 influx."""
             try:
-                write_api.write(bucket=bucket, record=json)
+                write_api.write(bucket=bucket, record=json, write_precision=precision)
             except (urllib3.exceptions.HTTPError, OSError) as exc:
                 raise ConnectionError(CONNECTION_ERROR % exc)
             except ApiException as exc:
@@ -387,10 +396,16 @@ def get_influx_connection(conf, test_write=False, test_read=False):
 
     influx = InfluxDBClient(**kwargs)
 
+    if precision not in ["ms", "s", "us", "ns", "m", "h"]:
+        _LOGGER.warning(
+            "Precision %s not valid, using %s.", precision, DEFAULT_PRECISION
+        )
+        precision = DEFAULT_PRECISION
+
     def write_v1(json):
         """Write data to V1 influx."""
         try:
-            influx.write_points(json)
+            influx.write_points(json, time_precision=precision)
         except (
             requests.exceptions.RequestException,
             exceptions.InfluxDBServerError,

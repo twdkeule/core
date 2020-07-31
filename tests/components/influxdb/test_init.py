@@ -5,7 +5,7 @@ import datetime
 import pytest
 
 import homeassistant.components.influxdb as influxdb
-from homeassistant.components.influxdb.const import DEFAULT_BUCKET
+from homeassistant.components.influxdb.const import DEFAULT_BUCKET, DEFAULT_PRECISION
 from homeassistant.const import (
     EVENT_STATE_CHANGED,
     STATE_OFF,
@@ -61,9 +61,11 @@ def mock_client_fixture(request):
 def get_mock_call_fixture(request):
     """Get version specific lambda to make write API call mock."""
     if request.param == influxdb.API_VERSION_2:
-        return lambda body: call(bucket=DEFAULT_BUCKET, record=body)
+        return lambda body, precision: call(
+            bucket=DEFAULT_BUCKET, record=body, write_precision=precision
+        )
     # pylint: disable=unnecessary-lambda
-    return lambda body: call(body)
+    return lambda body, precision: call(body, time_precision=precision)
 
 
 def _get_write_api_mock_v1(mock_influx_client):
@@ -111,6 +113,7 @@ async def test_setup_config_full(hass, mock_client, config_ext, get_write_api):
             "database": "db",
             "max_retries": 4,
             "ssl": "False",
+            # "precision": "s",
         }
     }
     config["influxdb"].update(config_ext)
@@ -282,7 +285,7 @@ async def test_event_listener(
 
         write_api = get_write_api(mock_client)
         assert write_api.call_count == 1
-        assert write_api.call_args == get_mock_call(body)
+        assert write_api.call_args == get_mock_call(body, DEFAULT_PRECISION)
         write_api.reset_mock()
 
 
@@ -336,7 +339,7 @@ async def test_event_listener_no_units(
 
         write_api = get_write_api(mock_client)
         assert write_api.call_count == 1
-        assert write_api.call_args == get_mock_call(body)
+        assert write_api.call_args == get_mock_call(body, DEFAULT_PRECISION)
         write_api.reset_mock()
 
 
@@ -386,7 +389,7 @@ async def test_event_listener_inf(
 
     write_api = get_write_api(mock_client)
     assert write_api.call_count == 1
-    assert write_api.call_args == get_mock_call(body)
+    assert write_api.call_args == get_mock_call(body, DEFAULT_PRECISION)
 
 
 @pytest.mark.parametrize(
@@ -436,7 +439,7 @@ async def test_event_listener_states(
         write_api = get_write_api(mock_client)
         if state_state == 1:
             assert write_api.call_count == 1
-            assert write_api.call_args == get_mock_call(body)
+            assert write_api.call_args == get_mock_call(body, DEFAULT_PRECISION)
         else:
             assert not write_api.called
         write_api.reset_mock()
@@ -467,7 +470,7 @@ def execute_filter_test(hass, tests, handler_method, write_api, get_mock_call):
 
         if test.should_pass:
             write_api.assert_called_once()
-            assert write_api.call_args == get_mock_call(body)
+            assert write_api.call_args == get_mock_call(body, DEFAULT_PRECISION)
         else:
             assert not write_api.called
         write_api.reset_mock()
@@ -837,7 +840,7 @@ async def test_event_listener_invalid_type(
 
         write_api = get_write_api(mock_client)
         assert write_api.call_count == 1
-        assert write_api.call_args == get_mock_call(body)
+        assert write_api.call_args == get_mock_call(body, DEFAULT_PRECISION)
         write_api.reset_mock()
 
 
@@ -884,7 +887,7 @@ async def test_event_listener_default_measurement(
 
     write_api = get_write_api(mock_client)
     assert write_api.call_count == 1
-    assert write_api.call_args == get_mock_call(body)
+    assert write_api.call_args == get_mock_call(body, DEFAULT_PRECISION)
 
 
 @pytest.mark.parametrize(
@@ -935,7 +938,7 @@ async def test_event_listener_unit_of_measurement_field(
 
     write_api = get_write_api(mock_client)
     assert write_api.call_count == 1
-    assert write_api.call_args == get_mock_call(body)
+    assert write_api.call_args == get_mock_call(body, DEFAULT_PRECISION)
 
 
 @pytest.mark.parametrize(
@@ -990,7 +993,7 @@ async def test_event_listener_tags_attributes(
 
     write_api = get_write_api(mock_client)
     assert write_api.call_count == 1
-    assert write_api.call_args == get_mock_call(body)
+    assert write_api.call_args == get_mock_call(body, DEFAULT_PRECISION)
 
 
 @pytest.mark.parametrize(
@@ -1055,7 +1058,7 @@ async def test_event_listener_component_override_measurement(
 
         write_api = get_write_api(mock_client)
         assert write_api.call_count == 1
-        assert write_api.call_args == get_mock_call(body)
+        assert write_api.call_args == get_mock_call(body, DEFAULT_PRECISION)
         write_api.reset_mock()
 
 
@@ -1143,7 +1146,7 @@ async def test_event_listener_ignore_attributes(
 
         write_api = get_write_api(mock_client)
         assert write_api.call_count == 1
-        assert write_api.call_args == get_mock_call(body)
+        assert write_api.call_args == get_mock_call(body, DEFAULT_PRECISION)
         write_api.reset_mock()
 
 
@@ -1197,7 +1200,7 @@ async def test_event_listener_ignore_attributes_overlapping_entities(
 
     write_api = get_write_api(mock_client)
     assert write_api.call_count == 1
-    assert write_api.call_args == get_mock_call(body)
+    assert write_api.call_args == get_mock_call(body, DEFAULT_PRECISION)
     write_api.reset_mock()
 
 
@@ -1348,7 +1351,7 @@ async def test_event_listener_attribute_name_conflict(
 
     write_api = get_write_api(mock_client)
     assert write_api.call_count == 1
-    assert write_api.call_args == get_mock_call(body)
+    assert write_api.call_args == get_mock_call(body, DEFAULT_PRECISION)
 
 
 @pytest.mark.parametrize(
@@ -1469,3 +1472,57 @@ async def test_invalid_inputs_error(
             == 1
         )
         sleep.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "mock_client, config_ext, get_write_api, get_mock_call",
+    [
+        (
+            influxdb.DEFAULT_API_VERSION,
+            BASE_V1_CONFIG,
+            _get_write_api_mock_v1,
+            influxdb.DEFAULT_API_VERSION,
+        ),
+        (
+            influxdb.API_VERSION_2,
+            BASE_V2_CONFIG,
+            _get_write_api_mock_v2,
+            influxdb.API_VERSION_2,
+        ),
+    ],
+    indirect=["mock_client", "get_mock_call"],
+)
+async def test_precision(hass, mock_client, config_ext, get_write_api, get_mock_call):
+    """Test the precision setup."""
+    precision = "us"
+    config = config_ext.copy()
+    config["precision"] = precision
+    handler_method = await _setup(hass, mock_client, config, get_write_api)
+
+    value = "1.9"
+    attrs = {
+        "unit_of_measurement": "foobars",
+    }
+    state = MagicMock(
+        state=value,
+        domain="fake",
+        entity_id="fake.entity-id",
+        object_id="entity",
+        attributes=attrs,
+    )
+    event = MagicMock(data={"new_state": state}, time_fired=12345)
+    body = [
+        {
+            "measurement": "foobars",
+            "tags": {"domain": "fake", "entity_id": "entity"},
+            "time": 12345,
+            "fields": {"value": float(value)},
+        }
+    ]
+    handler_method(event)
+    hass.data[influxdb.DOMAIN].block_till_done()
+
+    write_api = get_write_api(mock_client)
+    assert write_api.call_count == 1
+    assert write_api.call_args == get_mock_call(body, precision)
+    write_api.reset_mock()
