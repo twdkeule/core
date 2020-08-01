@@ -1,5 +1,6 @@
 """Support for sending data to an Influx database."""
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import logging
 import math
 import queue
@@ -58,6 +59,7 @@ from .const import (
     CONF_PATH,
     CONF_PORT,
     CONF_PRECISION,
+    CONF_RESEND_PERIOD,
     CONF_RETRY_COUNT,
     CONF_SSL,
     CONF_TAGS,
@@ -199,14 +201,12 @@ def _generate_event_to_json(conf: Dict) -> Callable[[Dict], str]:
     )
 
     def event_to_json(event: Dict) -> str:
-        """Convert event into json in format Influx expects."""
+        """Convert event into json in format Influx expects. Returns: (key, json)."""
         state = event.data.get(EVENT_NEW_STATE)
-        if (
-            state is None
-            or state.state in (STATE_UNKNOWN, "", STATE_UNAVAILABLE)
-            or not entity_filter(state.entity_id)
-        ):
-            return
+        if state is None or not entity_filter(state.entity_id):
+            return None
+        if state.state in (STATE_UNKNOWN, "", STATE_UNAVAILABLE):
+            return state.entity_id, None
 
         try:
             _include_state = _include_value = False
@@ -286,7 +286,7 @@ def _generate_event_to_json(conf: Dict) -> Callable[[Dict], str]:
 
         json[INFLUX_CONF_TAGS].update(tags)
 
-        return json
+        return state.entity_id, json
 
     return event_to_json
 
@@ -458,7 +458,10 @@ def setup(hass, config):
 
     event_to_json = _generate_event_to_json(conf)
     max_tries = conf.get(CONF_RETRY_COUNT)
-    instance = hass.data[DOMAIN] = InfluxThread(hass, influx, event_to_json, max_tries)
+    resend_period = conf.get(CONF_RESEND_PERIOD, None)
+    instance = hass.data[DOMAIN] = InfluxThread(
+        hass, influx, event_to_json, max_tries, resend_period
+    )
     instance.start()
 
     def shutdown(event):
@@ -475,12 +478,15 @@ def setup(hass, config):
 class InfluxThread(threading.Thread):
     """A threaded event handler class."""
 
-    def __init__(self, hass, influx, event_to_json, max_tries):
+    def __init__(self, hass, influx, event_to_json, max_tries, resend_period):
         """Initialize the listener."""
         threading.Thread.__init__(self, name=DOMAIN)
         self.queue = queue.Queue()
         self.influx = influx
         self.event_to_json = event_to_json
+        self.cached_states = dict()
+        self.resend_period = resend_period
+        self.states_last_sent = time.monotonic()
         self.max_tries = max_tries
         self.write_errors = 0
         self.shutdown = False
@@ -496,7 +502,7 @@ class InfluxThread(threading.Thread):
         """Return number of seconds to wait for more events."""
         return BATCH_TIMEOUT
 
-    def get_events_json(self):
+    def get_events_json(self, max_timeout):
         """Return a batch of events formatted for writing."""
         queue_seconds = QUEUE_BACKLOG_SECONDS + self.max_tries * RETRY_DELAY
 
@@ -507,22 +513,29 @@ class InfluxThread(threading.Thread):
 
         try:
             while len(json) < BATCH_BUFFER_SIZE and not self.shutdown:
-                timeout = None if count == 0 else self.batch_timeout()
+                timeout = max_timeout if count == 0 else self.batch_timeout()
+                if max_timeout:
+                    timeout = min(timeout, max_timeout)
                 item = self.queue.get(timeout=timeout)
                 count += 1
 
                 if item is None:
                     self.shutdown = True
-                else:
-                    timestamp, event = item
-                    age = time.monotonic() - timestamp
+                    break
 
-                    if age < queue_seconds:
-                        event_json = self.event_to_json(event)
+                timestamp, event = item
+                age = time.monotonic() - timestamp
+                if age < queue_seconds:
+                    encoded = self.event_to_json(event)
+                    if encoded:
+                        entity_id, event_json = encoded
                         if event_json:
                             json.append(event_json)
-                    else:
-                        dropped += 1
+                            self.cached_states[entity_id] = event_json
+                        else:
+                            self.cached_states.pop(entity_id, None)
+                else:
+                    dropped += 1
 
         except queue.Empty:
             pass
@@ -558,7 +571,18 @@ class InfluxThread(threading.Thread):
     def run(self):
         """Process incoming events."""
         while not self.shutdown:
-            count, json = self.get_events_json()
+            count, json = self.get_events_json(self.resend_period)
+            now = time.monotonic()
+            if self.resend_period and now > self.states_last_sent + self.resend_period:
+                timestamp = datetime.now(timezone.utc)
+                for j in self.cached_states.values():
+                    if len(json) < BATCH_BUFFER_SIZE and not self.shutdown:
+                        j = j.copy()
+                        j[INFLUX_CONF_TIME] = timestamp
+                        json.append(j)
+                    else:
+                        break
+                self.states_last_sent = now
             if json:
                 self.write_to_influxdb(json)
             for _ in range(count):

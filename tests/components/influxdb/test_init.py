@@ -1,4 +1,5 @@
 """The tests for the InfluxDB component."""
+from asyncio import sleep as async_sleep
 from dataclasses import dataclass
 import datetime
 
@@ -1525,4 +1526,60 @@ async def test_precision(hass, mock_client, config_ext, get_write_api, get_mock_
     write_api = get_write_api(mock_client)
     assert write_api.call_count == 1
     assert write_api.call_args == get_mock_call(body, precision)
+    write_api.reset_mock()
+
+
+@pytest.mark.parametrize(
+    "mock_client, config_ext, get_write_api, get_mock_call",
+    [
+        (
+            influxdb.DEFAULT_API_VERSION,
+            BASE_V1_CONFIG,
+            _get_write_api_mock_v1,
+            influxdb.DEFAULT_API_VERSION,
+        )
+    ],
+    indirect=["mock_client", "get_mock_call"],
+)
+async def test_resend_period(
+    hass, mock_client, config_ext, get_write_api, get_mock_call
+):
+    """Test the precision setup."""
+    config = config_ext.copy()
+    config["resend"] = 0.001  # 1ms
+    handler_method = await _setup(hass, mock_client, config, get_write_api)
+
+    start_time = datetime.datetime.now(datetime.timezone.utc)
+    value = "1.9"
+    attrs = {
+        "unit_of_measurement": "foobars",
+    }
+    state = MagicMock(
+        state=value,
+        domain="fake",
+        entity_id="fake.entity-id",
+        object_id="entity",
+        attributes=attrs,
+    )
+    event = MagicMock(data={"new_state": state}, time_fired=start_time)
+
+    handler_method(event)
+    hass.data[influxdb.DOMAIN].block_till_done()
+
+    await async_sleep(0.0035)  # 3.5 ms
+
+    write_api = get_write_api(mock_client)
+    assert write_api.call_count == 4
+    assert (
+        write_api.call_args_list[1].args[0][0]["time"]
+        > write_api.call_args_list[0].args[0][0]["time"]
+    )
+    assert (
+        write_api.call_args_list[2].args[0][0]["time"]
+        > write_api.call_args_list[1].args[0][0]["time"]
+    )
+    assert (
+        write_api.call_args_list[3].args[0][0]["time"]
+        > write_api.call_args_list[2].args[0][0]["time"]
+    )
     write_api.reset_mock()

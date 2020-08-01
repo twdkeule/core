@@ -30,6 +30,7 @@ CONF_COMPONENT_CONFIG_DOMAIN = "component_config_domain"
 CONF_RETRY_COUNT = "max_retries"
 CONF_IGNORE_ATTRIBUTES = "ignore_attributes"
 CONF_PRECISION = "precision"
+CONF_RESEND_PERIOD = "resend"
 
 CONF_LANGUAGE = "language"
 CONF_QUERIES = "queries"
@@ -138,6 +139,7 @@ COMPONENT_CONFIG_SCHEMA_CONNECTION = {
     vol.Optional(CONF_PORT): cv.port,
     vol.Optional(CONF_SSL): cv.boolean,
     vol.Optional(CONF_PRECISION): cv.string,
+    vol.Optional(CONF_RESEND_PERIOD): vol.Coerce(float),
     # Connection config for V1 API only.
     vol.Inclusive(CONF_USERNAME, "authentication"): cv.string,
     vol.Inclusive(CONF_PASSWORD, "authentication"): cv.string,
